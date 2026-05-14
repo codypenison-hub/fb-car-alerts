@@ -1,0 +1,48 @@
+name: FB Marketplace Vehicle Alert
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'  # every 30 minutes
+  workflow_dispatch:           # lets you trigger manually from GitHub too
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write          # needed to commit seen_listings.json back
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}
+
+      - name: Install dependencies
+        run: |
+          pip install playwright httpx
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Run scraper
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          FB_COOKIES: ${{ secrets.FB_COOKIES }}
+        run: python scraper.py
+
+      - name: Save seen listings back to repo
+        run: |
+          git config user.name "marketplace-bot"
+          git config user.email "bot@noreply.github.com"
+          git add seen_listings.json
+          git diff --staged --quiet || git commit -m "chore: update seen listings"
+          git push
