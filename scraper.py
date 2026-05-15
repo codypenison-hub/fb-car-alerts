@@ -9,7 +9,6 @@ CHAT_ID = os.environ["CHAT_ID"]
 COOKIES_JSON = os.environ["FB_COOKIES"]
 SEEN_FILE = "seen_listings.json"
 
-# FB Marketplace — vehicles near Hastings NZ, under $4000 NZD, ~100km radius
 MARKETPLACE_URL = (
     "https://www.facebook.com/marketplace/hastings/"
     "vehicles?minPrice=0&maxPrice=4000&exact=false"
@@ -36,8 +35,19 @@ def save_seen(seen: set):
     with open(SEEN_FILE, "w") as f:
         json.dump(list(seen), f)
 
+def clean_cookies(cookies):
+    cleaned = []
+    for cookie in cookies:
+        if cookie.get("sameSite") not in ("Strict", "Lax", "None"):
+            cookie["sameSite"] = "Lax"
+        cookie.pop("hostOnly", None)
+        cookie.pop("storeId", None)
+        cookie.pop("session", None)
+        cleaned.append(cookie)
+    return cleaned
+
 async def scrape():
-    cookies = json.loads(COOKIES_JSON)
+    cookies = clean_cookies(json.loads(COOKIES_JSON))
     seen = load_seen()
     new_listings = []
 
@@ -57,9 +67,8 @@ async def scrape():
 
         print(f"Loading: {MARKETPLACE_URL}")
         await page.goto(MARKETPLACE_URL, wait_until="domcontentloaded", timeout=45000)
-        await asyncio.sleep(5)  # let JS render listings
+        await asyncio.sleep(5)
 
-        # Grab all marketplace item links
         listing_elements = await page.query_selector_all('a[href*="/marketplace/item/"]')
         print(f"Found {len(listing_elements)} listing elements")
 
@@ -68,7 +77,6 @@ async def scrape():
             if not href:
                 continue
 
-            # Extract clean listing ID
             try:
                 listing_id = href.split("/marketplace/item/")[1].split("/")[0].split("?")[0]
             except IndexError:
@@ -77,7 +85,6 @@ async def scrape():
             if listing_id in seen:
                 continue
 
-            # Pull visible text (title + price usually combined)
             raw_text = (await el.inner_text()).strip()
             lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
             title = lines[0] if lines else "No title"
@@ -87,7 +94,6 @@ async def scrape():
                 f"https://www.facebook.com{href}"
                 if href.startswith("/") else href
             )
-            # Strip tracking params for cleaner link
             full_link = full_link.split("?")[0]
 
             seen.add(listing_id)
