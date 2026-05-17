@@ -1,4 +1,3 @@
-import asyncio
 import json
 import os
 import time
@@ -22,18 +21,23 @@ def save_seen(seen: set):
     with open(SEEN_FILE, "w") as f:
         json.dump(list(seen), f)
 
+def clean_text(text):
+    if not text:
+        return ""
+    return str(text).encode("utf-8", "ignore").decode("utf-8")
+
 def send_telegram(message: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     resp = httpx.post(url, json={
-        "chat_id": CHAT_ID,
+        "chat_id": int(CHAT_ID),
         "text": message,
-    })
+    }, timeout=15)
+    print(f"Telegram response: {resp.status_code} {resp.text}")
     resp.raise_for_status()
 
 def run_apify_actor():
     headers = {"Authorization": f"Bearer {APIFY_TOKEN}"}
-    
-    # Start the actor run
+
     print("Starting Apify actor...")
     resp = httpx.post(
         f"https://api.apify.com/v2/acts/{ACTOR_ID}/runs",
@@ -48,7 +52,6 @@ def run_apify_actor():
     run_id = resp.json()["data"]["id"]
     print(f"Run started: {run_id}")
 
-    # Wait for it to finish (max 3 minutes)
     for _ in range(36):
         time.sleep(10)
         status_resp = httpx.get(
@@ -65,7 +68,6 @@ def run_apify_actor():
         print(f"Actor run did not succeed: {status}")
         return []
 
-    # Get results
     results_resp = httpx.get(
         f"https://api.apify.com/v2/actor-runs/{run_id}/dataset/items",
         headers=headers,
@@ -80,25 +82,25 @@ def main():
     listings = run_apify_actor()
     print(f"Got {len(listings)} listings from Apify")
 
+    # Print first listing so we can see the data structure
+    if listings:
+        print(f"Sample listing keys: {list(listings[0].keys())}")
+        print(f"Sample listing: {json.dumps(listings[0], indent=2)[:500]}")
+
     new_count = 0
     for item in listings:
         listing_id = str(item.get("id") or item.get("listingId") or "")
         if not listing_id or listing_id in seen:
             continue
 
-        title = item.get("title") or item.get("name") or "No title"
-        price = item.get("price") or item.get("priceAmount") or "Price not listed"
-        url = item.get("url") or item.get("listingUrl") or ""
+        title = clean_text(item.get("title") or item.get("name") or "No title")
+        price = clean_text(item.get("price") or item.get("priceAmount") or "Price not listed")
+        url = clean_text(item.get("url") or item.get("listingUrl") or "")
 
         seen.add(listing_id)
         new_count += 1
 
-        msg = (
-            f"New Vehicle - Hawke's Bay\n\n"
-            f"{title}\n"
-            f"{price}\n\n"
-            f"{url}"
-        )
+        msg = f"New Vehicle - Hawke's Bay\n\n{title}\n{price}\n\n{url}"
         send_telegram(msg)
         print(f"Alert sent: {title} - {price}")
 
