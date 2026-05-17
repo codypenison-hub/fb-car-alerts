@@ -49,7 +49,7 @@ def run_apify_actor():
     print(f"Run started: {run_id}")
 
     # Wait for it to finish (max 3 minutes)
-    for _ in range(18):
+    for _ in range(36):
         time.sleep(10)
         status_resp = httpx.get(
             f"https://api.apify.com/v2/actor-runs/{run_id}",
