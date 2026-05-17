@@ -2,14 +2,14 @@ name: FB Marketplace Vehicle Alert
 
 on:
   schedule:
-    - cron: '*/30 * * * *'  # every 30 minutes
-  workflow_dispatch:           # lets you trigger manually from GitHub too
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
     permissions:
-      contents: write          # needed to commit seen_listings.json back
+      contents: write
 
     steps:
       - name: Checkout repo
@@ -20,23 +20,14 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-chromium-${{ runner.os }}
-
       - name: Install dependencies
-        run: |
-          pip install playwright httpx
-          playwright install chromium
-          playwright install-deps chromium
+        run: pip install httpx
 
       - name: Run scraper
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-          FB_COOKIES: ${{ secrets.FB_COOKIES }}
+          APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
         run: python scraper.py
 
       - name: Save seen listings back to repo
