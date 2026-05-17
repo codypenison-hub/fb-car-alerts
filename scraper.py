@@ -1,29 +1,16 @@
 import asyncio
 import json
 import os
+import time
 import httpx
-from playwright.async_api import async_playwright
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
-COOKIES_JSON = os.environ["FB_COOKIES"]
+APIFY_TOKEN = os.environ["APIFY_TOKEN"]
 SEEN_FILE = "seen_listings.json"
 
-MARKETPLACE_URL = (
-    "https://www.facebook.com/marketplace/hastings/"
-    "vehicles?minPrice=0&maxPrice=4000&exact=false"
-)
-
-async def send_telegram(message: str):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(url, json={
-            "chat_id": CHAT_ID,
-            "text": message,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": False
-        })
-        resp.raise_for_status()
+ACTOR_ID = "U5DUNxhH3qKt5PnCf"
+MARKETPLACE_URL = "https://www.facebook.com/marketplace/104080902963296/vehicles?maxPrice=4000&exact=false"
 
 def load_seen() -> set:
     if os.path.exists(SEEN_FILE):
@@ -35,92 +22,92 @@ def save_seen(seen: set):
     with open(SEEN_FILE, "w") as f:
         json.dump(list(seen), f)
 
-def clean_cookies(cookies):
-    cleaned = []
-    for cookie in cookies:
-        if cookie.get("sameSite") not in ("Strict", "Lax", "None"):
-            cookie["sameSite"] = "Lax"
-        cookie.pop("hostOnly", None)
-        cookie.pop("storeId", None)
-        cookie.pop("session", None)
-        cleaned.append(cookie)
-    return cleaned
+def send_telegram(message: str):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    resp = httpx.post(url, json={
+        "chat_id": CHAT_ID,
+        "text": message,
+    })
+    resp.raise_for_status()
 
-async def scrape():
-    cookies = clean_cookies(json.loads(COOKIES_JSON))
-    seen = load_seen()
-    new_listings = []
+def run_apify_actor():
+    headers = {"Authorization": f"Bearer {APIFY_TOKEN}"}
+    
+    # Start the actor run
+    print("Starting Apify actor...")
+    resp = httpx.post(
+        f"https://api.apify.com/v2/acts/{ACTOR_ID}/runs",
+        headers=headers,
+        json={
+            "startUrls": [{"url": MARKETPLACE_URL}],
+            "maxItems": 40,
+        },
+        timeout=30
+    )
+    resp.raise_for_status()
+    run_id = resp.json()["data"]["id"]
+    print(f"Run started: {run_id}")
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/122.0.0.0 Safari/537.36"
-            ),
-            viewport={"width": 1280, "height": 900},
-            locale="en-NZ",
+    # Wait for it to finish (max 3 minutes)
+    for _ in range(18):
+        time.sleep(10)
+        status_resp = httpx.get(
+            f"https://api.apify.com/v2/actor-runs/{run_id}",
+            headers=headers,
+            timeout=30
         )
-        await context.add_cookies(cookies)
-        page = await context.new_page()
+        status = status_resp.json()["data"]["status"]
+        print(f"Status: {status}")
+        if status in ("SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"):
+            break
 
-        print(f"Loading: {MARKETPLACE_URL}")
-        await page.goto(MARKETPLACE_URL, wait_until="domcontentloaded", timeout=45000)
-        await asyncio.sleep(5)
+    if status != "SUCCEEDED":
+        print(f"Actor run did not succeed: {status}")
+        return []
 
-        listing_elements = await page.query_selector_all('a[href*="/marketplace/item/"]')
-        print(f"Found {len(listing_elements)} listing elements")
+    # Get results
+    results_resp = httpx.get(
+        f"https://api.apify.com/v2/actor-runs/{run_id}/dataset/items",
+        headers=headers,
+        params={"limit": 40},
+        timeout=30
+    )
+    results_resp.raise_for_status()
+    return results_resp.json()
 
-        for el in listing_elements:
-            href = await el.get_attribute("href")
-            if not href:
-                continue
+def main():
+    seen = load_seen()
+    listings = run_apify_actor()
+    print(f"Got {len(listings)} listings from Apify")
 
-            try:
-                listing_id = href.split("/marketplace/item/")[1].split("/")[0].split("?")[0]
-            except IndexError:
-                continue
+    new_count = 0
+    for item in listings:
+        listing_id = str(item.get("id") or item.get("listingId") or "")
+        if not listing_id or listing_id in seen:
+            continue
 
-            if listing_id in seen:
-                continue
+        title = item.get("title") or item.get("name") or "No title"
+        price = item.get("price") or item.get("priceAmount") or "Price not listed"
+        url = item.get("url") or item.get("listingUrl") or ""
 
-            raw_text = (await el.inner_text()).strip()
-            lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
-            title = lines[0] if lines else "No title"
-            price = lines[1] if len(lines) > 1 else "Price not listed"
+        seen.add(listing_id)
+        new_count += 1
 
-            full_link = (
-                f"https://www.facebook.com{href}"
-                if href.startswith("/") else href
-            )
-            full_link = full_link.split("?")[0]
-
-            seen.add(listing_id)
-            new_listings.append({
-                "title": title[:120],
-                "price": price[:40],
-                "link": full_link,
-            })
-
-        await browser.close()
+        msg = (
+            f"New Vehicle - Hawke's Bay\n\n"
+            f"{title}\n"
+            f"{price}\n\n"
+            f"{url}"
+        )
+        send_telegram(msg)
+        print(f"Alert sent: {title} - {price}")
 
     save_seen(seen)
 
-    for item in new_listings:
-        msg = (
-            f"🚗 <b>New Vehicle — Hawke's Bay</b>\n\n"
-            f"<b>{item['title']}</b>\n"
-            f"💰 {item['price']}\n\n"
-            f"<a href='{item['link']}'>View on Marketplace →</a>"
-        )
-        await send_telegram(msg)
-        print(f"Alert sent: {item['title']} — {item['price']}")
-
-    if not new_listings:
+    if new_count == 0:
         print("No new listings this run.")
     else:
-        print(f"Done — {len(new_listings)} alert(s) sent.")
+        print(f"Done - {new_count} alert(s) sent.")
 
 if __name__ == "__main__":
-    asyncio.run(scrape())
+    main()
